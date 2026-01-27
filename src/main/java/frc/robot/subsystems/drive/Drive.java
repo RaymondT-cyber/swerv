@@ -15,6 +15,7 @@ import static frc.robot.subsystems.drive.SwerveConstants.*;
 import choreo.trajectory.SwerveSample;
 import com.ctre.phoenix6.swerve.SwerveRequest;
 import com.pathplanner.lib.auto.AutoBuilder;
+import com.pathplanner.lib.config.PIDConstants;
 import com.pathplanner.lib.controllers.PPHolonomicDriveController;
 import com.pathplanner.lib.pathfinding.Pathfinding;
 import com.pathplanner.lib.util.PathPlannerLogging;
@@ -80,13 +81,7 @@ public class Drive extends SubsystemBase {
   private SwerveDrivePoseEstimator m_PoseEstimator =
       new SwerveDrivePoseEstimator(kinematics, rawGyroRotation, lastModulePositions, Pose2d.kZero);
 
-  private final ProfiledPIDController thetaController =
-      new ProfiledPIDController(
-          DrivebaseConstants.kPTheta,
-          DrivebaseConstants.kITheta,
-          DrivebaseConstants.kDTheta,
-          new TrapezoidProfile.Constraints(
-              DrivebaseConstants.kMaxAngularSpeed, DrivebaseConstants.kMaxAngularAccel));
+  private ProfiledPIDController angleController;
 
   private DriveSimPhysics simPhysics;
 
@@ -94,6 +89,17 @@ public class Drive extends SubsystemBase {
   public Drive(ImuIO imuIO) {
     this.imuIO = imuIO;
 
+    // Define the Angle Controller
+    angleController =
+        new ProfiledPIDController(
+            DrivebaseConstants.kPSPin,
+            DrivebaseConstants.kISPin,
+            DrivebaseConstants.kDSpin,
+            new TrapezoidProfile.Constraints(
+                getMaxAngularSpeedRadPerSec(), getMaxLinearAccelMetersPerSecPerSec()));
+    angleController.enableContinuousInput(-Math.PI, Math.PI);
+
+    // If REAL (i.e., NOT simulation), parse out the module types
     if (Constants.getMode() == Mode.REAL) {
 
       // Case out the swerve types because Az-RBSI supports a lot
@@ -167,7 +173,15 @@ public class Drive extends SubsystemBase {
               this::resetPose,
               this::getChassisSpeeds,
               (speeds, feedforwards) -> runVelocity(speeds),
-              new PPHolonomicDriveController(AutoConstants.kPPdrivePID, AutoConstants.kPPsteerPID),
+              new PPHolonomicDriveController(
+                  new PIDConstants(
+                      DrivebaseConstants.kPStrafe,
+                      DrivebaseConstants.kIStrafe,
+                      DrivebaseConstants.kDStrafe),
+                  new PIDConstants(
+                      DrivebaseConstants.kPSPin,
+                      DrivebaseConstants.kISPin,
+                      DrivebaseConstants.kDSpin)),
               AutoConstants.kPathPlannerConfig,
               () -> DriverStation.getAlliance().orElse(Alliance.Blue) == Alliance.Red,
               this);
@@ -354,7 +368,7 @@ public class Drive extends SubsystemBase {
     // Calculate module setpoints
     ChassisSpeeds discreteSpeeds = ChassisSpeeds.discretize(speeds, Constants.loopPeriodSecs);
     SwerveModuleState[] setpointStates = kinematics.toSwerveModuleStates(discreteSpeeds);
-    SwerveDriveKinematics.desaturateWheelSpeeds(setpointStates, DrivebaseConstants.kMaxLinearSpeed);
+    SwerveDriveKinematics.desaturateWheelSpeeds(setpointStates, getMaxLinearSpeedMetersPerSec());
 
     // Log unoptimized setpoints and setpoint speeds
     Logger.recordOutput("SwerveStates/Setpoints", setpointStates);
@@ -377,14 +391,17 @@ public class Drive extends SubsystemBase {
   }
 
   /**
-   * Reset the heading ProfiledPIDController
-   *
-   * <p>TODO: CALL THIS FUNCTION!!!
+   * Reset the heading for the ProfiledPIDController
    *
    * <p>Call this when: (A) robot is disabled, (B) gyro is zeroed, (C) autonomous starts
    */
   public void resetHeadingController() {
-    thetaController.reset(getHeading().getRadians());
+    angleController.reset(getHeading().getRadians());
+  }
+
+  /** Getter function for the angle controller */
+  public ProfiledPIDController getAngleController() {
+    return angleController;
   }
 
   /** SysId Characterization Routines ************************************** */
@@ -510,6 +527,16 @@ public class Drive extends SubsystemBase {
     return getMaxLinearSpeedMetersPerSec() / kDriveBaseRadiusMeters;
   }
 
+  /** Returns the maximum linear acceleration in meters per sec per sec. */
+  public double getMaxLinearAccelMetersPerSecPerSec() {
+    return DrivebaseConstants.kMaxLinearAccel;
+  }
+
+  /** Returns the maximum angular acceleration in radians per sec per sec */
+  public double getMaxAngularAccelRadPerSecPerSec() {
+    return getMaxLinearAccelMetersPerSecPerSec() / kDriveBaseRadiusMeters;
+  }
+
   /* Setter Functions ****************************************************** */
 
   /** Resets the current odometry pose. */
@@ -523,11 +550,13 @@ public class Drive extends SubsystemBase {
         DriverStation.getAlliance().orElse(Alliance.Blue) == Alliance.Blue
             ? Rotation2d.kZero
             : Rotation2d.k180deg);
+    resetHeadingController();
   }
 
   /** Zeros the heading */
   public void zeroHeading() {
     imuIO.zeroYaw(Rotation2d.kZero);
+    resetHeadingController();
   }
 
   /** Adds a new timestamped vision measurement. */
